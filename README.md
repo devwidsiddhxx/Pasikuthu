@@ -4,6 +4,8 @@ Modern React + TypeScript + Vite app for coordinating community food donations.
 Volunteers authenticate with a magic link, log donations, chat with donors
 over WhatsApp, and adjust remaining portions in real time.
 
+https://pasikuthu.vercel.app/
+
 ![Pasikuthu screenshot](screenshot.png)
 
 ## Features
@@ -93,7 +95,7 @@ Thank you for your contribution!
 npm run dev
 ```
 
-Visit http://localhost:5173/ and log in with your email. Supabase will email you
+Visit https://pasikuthu.vercel.app/ and log in with your email. Supabase will email you
 the magic link.
 
 ## Scripts
