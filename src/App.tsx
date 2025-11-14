@@ -14,14 +14,45 @@ type Donation = {
   contact_number: string | null
 }
 
+const CITY_SUGGESTIONS = [
+  'Chennai',
+  'Hyderabad',
+  'Bengaluru',
+  'Coimbatore',
+  'Madurai',
+  'Mumbai',
+  'Delhi',
+  'Kolkata',
+  'Pune',
+  'Kochi',
+  'Trichy',
+  'Salem',
+  'Vizag',
+  'Mysuru',
+  'Ahmedabad',
+] as const
+
 const emailRedirectTo =
   typeof window !== 'undefined' ? `${window.location.origin}/` : undefined
 
 const buildWhatsAppLink = (phone: string | null) => {
   if (!phone) return null
-  const digitsOnly = phone.replace(/\D/g, '')
+  let digitsOnly = phone.replace(/\D/g, '')
   if (!digitsOnly.length) return null
+  if (digitsOnly.length === 10) {
+    digitsOnly = `91${digitsOnly}`
+  }
   return `https://wa.me/${digitsOnly}`
+}
+
+const formatPhoneForDisplay = (phone: string | null) => {
+  if (!phone) return ''
+  const digitsOnly = phone.replace(/\D/g, '')
+  if (!digitsOnly.length) return ''
+  const withCountry =
+    digitsOnly.length === 10 ? `91${digitsOnly}` : digitsOnly
+  const localPart = withCountry.slice(-10)
+  return `+${withCountry.slice(0, withCountry.length - 10)} ${localPart}`
 }
 
 function App() {
@@ -39,6 +70,11 @@ function App() {
   const [updateDonationError, setUpdateDonationError] = useState<string | null>(
     null,
   )
+  const [searchQuery, setSearchQuery] = useState('')
+  const [filterLocation, setFilterLocation] = useState<string>('')
+  const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'finished'>('all')
+  const [sortBy, setSortBy] = useState<'date' | 'qty' | 'name'>('date')
+  const [deletingDonationId, setDeletingDonationId] = useState<string | null>(null)
 
   const [formState, setFormState] = useState({
     food_name: '',
@@ -134,39 +170,57 @@ function App() {
 
   const handleUpdateQuantity = async (donation: Donation) => {
     const input = window.prompt(
-      `Update quantity for ${donation.food_name}`,
+      `Update quantity for ${donation.food_name}\nCurrent: ${donation.qty}`,
       donation.qty.toString(),
     )
 
-    if (input === null) return
-    const nextQty = Number(input)
-    if (!Number.isFinite(nextQty) || nextQty <= 0) {
-      setUpdateDonationError('Quantity must be a positive number.')
+    if (input === null || input.trim() === '') return
+    
+    const nextQty = Number(input.trim())
+    if (!Number.isFinite(nextQty) || nextQty < 0) {
+      setUpdateDonationError('Quantity must be zero or a positive number.')
+      setTimeout(() => setUpdateDonationError(null), 5000)
+      return
+    }
+
+    if (nextQty === donation.qty) {
       return
     }
 
     setUpdatingDonationId(donation.id)
     setUpdateDonationError(null)
 
-    const { data, error } = await supabase
-      .from('donations')
-      .update({ qty: nextQty })
-      .eq('id', donation.id)
-      .select('id, created_at, food_name, description, qty, name, location, contact_number')
+    try {
+      const { data, error } = await supabase
+        .from('donations')
+        .update({ qty: nextQty })
+        .eq('id', donation.id)
+        .select('id, created_at, food_name, description, qty, name, location, contact_number')
 
-    setUpdatingDonationId(null)
+      if (error) {
+        console.error('Update error:', error)
+        setUpdateDonationError(`Failed to update: ${error.message}`)
+        setTimeout(() => setUpdateDonationError(null), 5000)
+        setUpdatingDonationId(null)
+        return
+      }
 
-    if (error) {
-      setUpdateDonationError(error.message)
-      return
-    }
-
-    if (data && Array.isArray(data) && data.length > 0) {
-      setDonations((current) =>
-        current.map((item) =>
-          item.id === donation.id ? (data[0] as Donation) : item,
-        ),
-      )
+      if (data && Array.isArray(data) && data.length > 0) {
+        const updatedDonation = data[0] as Donation
+        setDonations((current) =>
+          current.map((item) =>
+            item.id === donation.id ? updatedDonation : item,
+          ),
+        )
+      } else {
+        await loadDonations()
+      }
+    } catch (err) {
+      console.error('Update exception:', err)
+      setUpdateDonationError('An unexpected error occurred. Please try again.')
+      setTimeout(() => setUpdateDonationError(null), 5000)
+    } finally {
+      setUpdatingDonationId(null)
     }
   }
 
@@ -195,15 +249,29 @@ function App() {
 
     const trimmedNameField = formState.name.trim()
     const trimmedLocation = formState.location.trim()
-    const trimmedContact = formState.contact_number.trim()
+    const phoneDigits = formState.contact_number.replace(/\D/g, '')
+
+    if (phoneDigits.length !== 10) {
+      setFormError('Contact number must be exactly 10 digits.')
+      setFormStatus('error')
+      return
+    }
+
+    const normalizedPhone = `+91${phoneDigits}`
+    const normalizedLocation =
+      trimmedLocation.length === 0
+        ? null
+        : CITY_SUGGESTIONS.find(
+            (city) => city.toLowerCase() === trimmedLocation.toLowerCase(),
+          ) ?? trimmedLocation
 
     const payload = {
       food_name: trimmedName,
       description: trimmedDescription.length ? trimmedDescription : null,
       qty,
       name: trimmedNameField.length ? trimmedNameField : null,
-      location: trimmedLocation.length ? trimmedLocation : null,
-      contact_number: trimmedContact.length ? trimmedContact : null,
+      location: normalizedLocation,
+      contact_number: normalizedPhone,
     }
 
     const { data, error } = await supabase
@@ -235,6 +303,74 @@ function App() {
     return null
   }, [otpState, otpError])
 
+  const statistics = useMemo(() => {
+    const total = donations.length
+    const active = donations.filter((d) => d.qty > 0).length
+    const finished = donations.filter((d) => d.qty === 0).length
+    const totalQty = donations.reduce((sum, d) => sum + d.qty, 0)
+    const locations = [...new Set(donations.map((d) => d.location).filter(Boolean))]
+    return { total, active, finished, totalQty, locations: locations.length }
+  }, [donations])
+
+  const filteredAndSortedDonations = useMemo(() => {
+    let filtered = [...donations]
+
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase()
+      filtered = filtered.filter(
+        (d) =>
+          d.food_name.toLowerCase().includes(query) ||
+          d.description?.toLowerCase().includes(query) ||
+          d.name?.toLowerCase().includes(query),
+      )
+    }
+
+    if (filterLocation) {
+      filtered = filtered.filter((d) => d.location === filterLocation)
+    }
+
+    if (filterStatus === 'active') {
+      filtered = filtered.filter((d) => d.qty > 0)
+    } else if (filterStatus === 'finished') {
+      filtered = filtered.filter((d) => d.qty === 0)
+    }
+
+    const sorted = [...filtered].sort((a, b) => {
+      if (sortBy === 'date') {
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      }
+      if (sortBy === 'qty') {
+        return b.qty - a.qty
+      }
+      if (sortBy === 'name') {
+        return a.food_name.localeCompare(b.food_name)
+      }
+      return 0
+    })
+
+    return sorted
+  }, [donations, searchQuery, filterLocation, filterStatus, sortBy])
+
+  const handleDeleteDonation = async (donationId: string) => {
+    if (!window.confirm('Are you sure you want to delete this donation?')) {
+      return
+    }
+
+    setDeletingDonationId(donationId)
+
+    const { error } = await supabase.from('donations').delete().eq('id', donationId)
+
+    if (error) {
+      setUpdateDonationError(`Failed to delete: ${error.message}`)
+      setTimeout(() => setUpdateDonationError(null), 5000)
+      setDeletingDonationId(null)
+      return
+    }
+
+    setDonations((current) => current.filter((d) => d.id !== donationId))
+    setDeletingDonationId(null)
+  }
+
   const isSignedIn = Boolean(session?.user)
 
   return (
@@ -264,7 +400,7 @@ function App() {
                 <line x1="15.5" y1="6" x2="15.5" y2="22" />
               </svg>
             </div>
-            <div>
+      <div>
               <h1 className="text-2xl font-semibold text-slate-900">
                 Pasikuthu
               </h1>
@@ -411,6 +547,7 @@ function App() {
                     Location
                     <input
                       type="text"
+                      list="city-options"
                       value={formState.location}
                       onChange={(event) =>
                         setFormState((prev) => ({
@@ -419,23 +556,39 @@ function App() {
                         }))
                       }
                       className="w-full rounded-lg border border-slate-300 px-3 py-2 text-base text-slate-900 shadow-sm transition focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-500/50"
-                      placeholder="City, State"
+                      placeholder="Start typing a city..."
                     />
+                    <datalist id="city-options">
+                      {CITY_SUGGESTIONS.map((city) => (
+                        <option key={city} value={city} />
+                      ))}
+                    </datalist>
                   </label>
                   <label className="flex flex-col gap-2 text-sm font-medium text-slate-700">
                     Contact Number
-                    <input
-                      type="tel"
-                      value={formState.contact_number}
-                      onChange={(event) =>
-                        setFormState((prev) => ({
-                          ...prev,
-                          contact_number: event.target.value,
-                        }))
-                      }
-                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-base text-slate-900 shadow-sm transition focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-500/50"
-                      placeholder="+1234567890"
-                    />
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600">
+                        +91
+                      </span>
+                      <input
+                        type="tel"
+                        value={formState.contact_number}
+                        onChange={(event) => {
+                          const digitsOnly = event.target.value
+                            .replace(/\D/g, '')
+                            .slice(0, 10)
+                          setFormState((prev) => ({
+                            ...prev,
+                            contact_number: digitsOnly,
+                          }))
+                        }}
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-base text-slate-900 shadow-sm transition focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-500/50"
+                        placeholder="10-digit mobile number"
+                      />
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Exactly 10 digits. We will prefix +91 automatically.
+                    </p>
                   </label>
 
                   <button
@@ -460,22 +613,106 @@ function App() {
               </div>
             </div>
 
-            <aside className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-slate-900">
-                  Recent donations
-                </h2>
-                <button
-                  type="button"
-                  onClick={() => loadDonations()}
-                  disabled={donationsLoading}
-                  className="text-sm font-medium text-emerald-600 transition hover:text-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {donationsLoading ? 'Refreshing…' : 'Refresh'}
-                </button>
+            <aside className="space-y-6">
+              {/* Statistics Cards */}
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                <div className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200">
+                  <p className="text-xs font-medium text-slate-600">Total</p>
+                  <p className="mt-1 text-2xl font-bold text-slate-900">{statistics.total}</p>
+                </div>
+                <div className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200">
+                  <p className="text-xs font-medium text-slate-600">Active</p>
+                  <p className="mt-1 text-2xl font-bold text-emerald-600">{statistics.active}</p>
+                </div>
+                <div className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200">
+                  <p className="text-xs font-medium text-slate-600">Finished</p>
+                  <p className="mt-1 text-2xl font-bold text-rose-600">{statistics.finished}</p>
+                </div>
+                <div className="rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200">
+                  <p className="text-xs font-medium text-slate-600">Total Qty</p>
+                  <p className="mt-1 text-2xl font-bold text-slate-900">{statistics.totalQty}</p>
+                </div>
               </div>
 
-              <div className="mt-4 space-y-4">
+              <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <h2 className="text-lg font-semibold text-slate-900">
+                    Donations ({filteredAndSortedDonations.length})
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={() => loadDonations()}
+                    disabled={donationsLoading}
+                    className="text-sm font-medium text-emerald-600 transition hover:text-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {donationsLoading ? 'Refreshing…' : 'Refresh'}
+                  </button>
+                </div>
+
+                {/* Search and Filters */}
+                <div className="mt-4 space-y-3">
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <div className="flex-1">
+                      <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search by food name, description, or donor..."
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm transition focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-500/50"
+                      />
+                    </div>
+                    <select
+                      value={filterLocation}
+                      onChange={(e) => setFilterLocation(e.target.value)}
+                      className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm transition focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-500/50"
+                    >
+                      <option value="">All Locations</option>
+                      {statistics.locations > 0 &&
+                        [...new Set(donations.map((d) => d.location).filter(Boolean))].map(
+                          (loc) => (
+                            <option key={loc} value={loc}>
+                              {loc}
+                            </option>
+                          ),
+                        )}
+                    </select>
+                    <select
+                      value={filterStatus}
+                      onChange={(e) =>
+                        setFilterStatus(e.target.value as 'all' | 'active' | 'finished')
+                      }
+                      className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm transition focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-500/50"
+                    >
+                      <option value="all">All Status</option>
+                      <option value="active">Active Only</option>
+                      <option value="finished">Finished Only</option>
+                    </select>
+                    <select
+                      value={sortBy}
+                      onChange={(e) => setSortBy(e.target.value as 'date' | 'qty' | 'name')}
+                      className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm transition focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-500/50"
+                    >
+                      <option value="date">Sort: Date</option>
+                      <option value="qty">Sort: Quantity</option>
+                      <option value="name">Sort: Name</option>
+                    </select>
+      </div>
+                  {(searchQuery || filterLocation || filterStatus !== 'all') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery('')
+                        setFilterLocation('')
+                        setFilterStatus('all')
+                      }}
+                      className="text-xs text-slate-600 underline hover:text-slate-900"
+                    >
+                      Clear filters
+        </button>
+                  )}
+                </div>
+
+                <div className="mt-4 space-y-4">
                 {donationsError ? (
                   <p className="text-sm text-rose-600">{donationsError}</p>
                 ) : null}
@@ -492,10 +729,16 @@ function App() {
                   </p>
                 ) : null}
 
+                {!donationsLoading && donations.length > 0 && filteredAndSortedDonations.length === 0 ? (
+                  <p className="rounded-lg bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    No donations match your filters. Try adjusting your search or filters.
+                  </p>
+                ) : null}
+
                 {donationsLoading ? (
                   <p className="text-sm text-slate-600">Loading donations…</p>
                 ) : (
-                  donations.map((donation) => {
+                  filteredAndSortedDonations.map((donation) => {
                     const whatsappLink = buildWhatsAppLink(donation.contact_number)
                     return (
                       <article
@@ -543,10 +786,10 @@ function App() {
                                   rel="noreferrer"
                                   className="text-emerald-700 underline-offset-2 hover:underline"
                                 >
-                                  {donation.contact_number}
+                                  {formatPhoneForDisplay(donation.contact_number)}
                                 </a>
                               ) : (
-                                donation.contact_number
+                                formatPhoneForDisplay(donation.contact_number)
                               )}
                             </p>
                           )}
@@ -554,28 +797,49 @@ function App() {
                         <p className="mt-3 text-xs uppercase tracking-wide text-slate-500">
                           {new Date(donation.created_at).toLocaleString()}
                         </p>
-                        <button
-                          type="button"
-                          onClick={() => handleUpdateQuantity(donation)}
-                          className="mt-3 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
-                          disabled={updatingDonationId === donation.id}
-                        >
-                          {updatingDonationId === donation.id ? (
-                            <>
-                              <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-600" />
-                              Updating
-                            </>
-                          ) : (
-                            <>
-                              <span className="h-2 w-2 rounded-full bg-emerald-600" />
-                              Update quantity
-                            </>
-                          )}
-                        </button>
+                        <div className="mt-3 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateQuantity(donation)}
+                            className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50"
+                            disabled={updatingDonationId === donation.id || deletingDonationId === donation.id}
+                          >
+                            {updatingDonationId === donation.id ? (
+                              <>
+                                <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-600" />
+                                Updating
+                              </>
+                            ) : (
+                              <>
+                                <span className="h-2 w-2 rounded-full bg-emerald-600" />
+                                Update quantity
+                              </>
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDonation(donation.id)}
+                            className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50"
+                            disabled={updatingDonationId === donation.id || deletingDonationId === donation.id}
+                          >
+                            {deletingDonationId === donation.id ? (
+                              <>
+                                <span className="h-2 w-2 animate-pulse rounded-full bg-rose-600" />
+                                Deleting
+                              </>
+                            ) : (
+                              <>
+                                <span className="h-2 w-2 rounded-full bg-rose-600" />
+                                Delete
+                              </>
+                            )}
+                          </button>
+                        </div>
                       </article>
                     )
                   })
                 )}
+              </div>
               </div>
             </aside>
           </section>
