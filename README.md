@@ -4,7 +4,7 @@ Modern React + TypeScript + Vite app for coordinating community food donations.
 Volunteers authenticate with a magic link, log donations, chat with donors
 over WhatsApp, and adjust remaining portions in real time.
 
-![Pasikuthu screenshot](Screenshot 2025-11-14 124726.png)
+![Pasikuthu screenshot](screenshot.png)
 
 ## Features
 
