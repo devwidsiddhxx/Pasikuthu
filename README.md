@@ -1,4 +1,4 @@
-# Pasikuthu – Supabase-powered Food Donations
+# Pasikuthu – An Wave For Food Donations
 
 Modern React + TypeScript + Vite app for coordinating community food donations.
 Volunteers authenticate with a magic link, log donations, chat with donors
